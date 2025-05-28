@@ -180,11 +180,11 @@
 
             reset() {
                 this.position = new Vector(
-                    this.isRed ? canvas.width * 0.1 : canvas.width * 0.9,
+                    this.isRed ? canvas.width * 0.9 : canvas.width * 0.1,
                     canvas.height / 2
                 );
                 this.velocity = new Vector(0, 0);
-                this.angle = this.isRed ? 0 : Math.PI;
+                this.angle = this.isRed ? Math.PI : 0;
                 this.speed = 0;
                 this.time = 0;
                 this.hasScored = false; // Track if player has scored
