@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bird Flocking Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: black;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Set canvas size
+        canvas.width = 1200;
+        canvas.height = 800;
+
+        // Game constants
+        const MAIN_ZONE_WIDTH = 800;
+        const SCORING_ZONE_WIDTH = 200;
+        const RED_ZONE_X = 0;
+        const BLUE_ZONE_X = MAIN_ZONE_WIDTH + SCORING_ZONE_WIDTH;
+        let redScore = 0;
+        let blueScore = 0;
+        let gameState = 'playing';
+        let roundNumber = 1;
+        let currentRedScore = 0;
+        let currentBlueScore = 0;
+        let activeBoids = []; // Store currently active boids
+        let redScoredBoids = []; // Store boids that scored for red
+        let blueScoredBoids = []; // Store boids that scored for blue
+
+        // Constants
+        const BOID_COUNT = 50;
+        const MAX_SPEED = 4;
+        const MAX_FORCE = 0.3;
+        const PERCEPTION_RADIUS = 50;
+        const ALIGNMENT_WEIGHT = 1.0;
+        const COHESION_WEIGHT = 1.0;
+        const SEPARATION_WEIGHT = 1.5;
+        const PLAYER_SPEED = 5;
+        const ROTATION_SPEED = 0.1;
+        const SWAY_AMPLITUDE = 0.3;
+        const SWAY_FREQUENCY = 0.1;
+        const PLAYER_ATTRACTION_WEIGHT = 0.8;
+        const PLAYER_ATTRACTION_RADIUS = 300;
+        const TRAIL_LENGTH = 20; // Number of positions to remember
+        const TRAIL_FADE_SPEED = 0.1; // How quickly the trail fades
+
+        // Player controls
+        const keys = {
+            w: false,
+            s: false,
+            a: false,
+            d: false,
+            i: false,
+            j: false,
+            k: false,
+            l: false,
+            ' ': false
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key.toLowerCase())) {
+                keys[e.key.toLowerCase()] = true;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key.toLowerCase())) {
+                keys[e.key.toLowerCase()] = false;
+            }
+        });
+
+        class Vector {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+
+            add(v) {
+                this.x += v.x;
+                this.y += v.y;
+            }
+
+            sub(v) {
+                return new Vector(this.x - v.x, this.y - v.y);
+            }
+
+            mult(n) {
+                this.x *= n;
+                this.y *= n;
+            }
+
+            div(n) {
+                this.x /= n;
+                this.y /= n;
+            }
+
+            mag() {
+                return Math.sqrt(this.x * this.x + this.y * this.y);
+            }
+
+            normalize() {
+                const m = this.mag();
+                if (m !== 0) {
+                    this.div(m);
+                }
+            }
+
+            limit(max) {
+                if (this.mag() > max) {
+                    this.normalize();
+                    this.mult(max);
+                }
+            }
+
+            clone() {
+                return new Vector(this.x, this.y);
+            }
+        }
+
+        class Trail {
+            constructor(color) {
+                this.positions = [];
+                this.color = color;
+                this.opacities = [];
+            }
+
+            addPosition(x, y) {
+                this.positions.push({ x, y });
+                this.opacities.push(1.0);
+                
+                // Keep only the last TRAIL_LENGTH positions
+                if (this.positions.length > TRAIL_LENGTH) {
+                    this.positions.shift();
+                    this.opacities.shift();
+                }
+            }
+
+            update() {
+                // Fade out each position
+                for (let i = 0; i < this.opacities.length; i++) {
+                    this.opacities[i] -= TRAIL_FADE_SPEED;
+                }
+            }
+
+            draw(ctx) {
+                for (let i = 0; i < this.positions.length; i++) {
+                    const pos = this.positions[i];
+                    const opacity = Math.max(0, this.opacities[i]);
+                    const size = 6 + (i / this.positions.length) * 4; // Trail gets smaller towards the end
+                    
+                    ctx.beginPath();
+                    ctx.fillStyle = `${this.color.replace(')', `, ${opacity})`)}`;
+                    ctx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+
+        class Player {
+            constructor(isRed) {
+                this.isRed = isRed;
+                this.trail = new Trail(isRed ? 'rgba(255, 0, 0' : 'rgba(0, 0, 255');
+                this.reset();
+            }
+
+            reset() {
+                this.position = new Vector(
+                    this.isRed ? canvas.width * 0.1 : canvas.width * 0.9,
+                    canvas.height / 2
+                );
+                this.velocity = new Vector(0, 0);
+                this.angle = this.isRed ? 0 : Math.PI;
+                this.speed = 0;
+                this.time = 0;
+                this.hasScored = false; // Track if player has scored
+                this.trail = new Trail(this.isRed ? 'rgba(255, 0, 0' : 'rgba(0, 0, 255');
+            }
+
+            update() {
+                // Only allow movement if player hasn't scored
+                if (!this.hasScored) {
+                    // Update angle based on controls
+                    if (this.isRed) {
+                        if (keys.a) this.angle -= ROTATION_SPEED;
+                        if (keys.d) this.angle += ROTATION_SPEED;
+                        if (keys.w) this.speed = PLAYER_SPEED;
+                        else if (keys.s) this.speed = -PLAYER_SPEED;
+                        else this.speed *= 0.95;
+                    } else {
+                        if (keys.j) this.angle -= ROTATION_SPEED;
+                        if (keys.l) this.angle += ROTATION_SPEED;
+                        if (keys.i) this.speed = PLAYER_SPEED;
+                        else if (keys.k) this.speed = -PLAYER_SPEED;
+                        else this.speed *= 0.95;
+                    }
+
+                    // Only update time when moving
+                    if (Math.abs(this.speed) > 0.1) {
+                        this.time += SWAY_FREQUENCY;
+                    }
+
+                    // Calculate base velocity from angle and speed
+                    const baseVelX = Math.cos(this.angle) * this.speed;
+                    const baseVelY = Math.sin(this.angle) * this.speed;
+
+                    // Add sinusoidal motion perpendicular to movement direction
+                    const swayAngle = this.angle + Math.PI / 2;
+                    const sway = Math.sin(this.time) * SWAY_AMPLITUDE * Math.abs(this.speed);
+                    
+                    // Combine base velocity with sway
+                    this.velocity.x = baseVelX + Math.cos(swayAngle) * sway;
+                    this.velocity.y = baseVelY + Math.sin(swayAngle) * sway;
+
+                    // Update position
+                    this.position.x += this.velocity.x;
+                    this.position.y += this.velocity.y;
+
+                    this.edges();
+
+                    // Add current position to trail
+                    this.trail.addPosition(this.position.x, this.position.y);
+                }
+                
+                // Update trail fade effect
+                this.trail.update();
+            }
+
+            checkScoring() {
+                const redCenter = SCORING_ZONE_WIDTH/2;
+                const blueCenter = BLUE_ZONE_X + SCORING_ZONE_WIDTH/2;
+                
+                if (gameState === 'playing' && !this.hasScored) {
+                    if (this.isRed && this.position.x <= redCenter) {
+                        this.hasScored = true;
+                        // Move scoring boids to redScoredBoids array
+                        const scoringBoids = activeBoids.filter(boid => boid.isInRedZone());
+                        currentRedScore = scoringBoids.length;
+                        redScoredBoids.push(...scoringBoids);
+                        activeBoids = activeBoids.filter(boid => !boid.isInRedZone());
+                        this.checkGameEnd();
+                    } else if (!this.isRed && this.position.x >= blueCenter) {
+                        this.hasScored = true;
+                        // Move scoring boids to blueScoredBoids array
+                        const scoringBoids = activeBoids.filter(boid => boid.isInBlueZone());
+                        currentBlueScore = scoringBoids.length;
+                        blueScoredBoids.push(...scoringBoids);
+                        activeBoids = activeBoids.filter(boid => !boid.isInBlueZone());
+                        this.checkGameEnd();
+                    }
+                }
+            }
+
+            checkGameEnd() {
+                if (redPlayer.hasScored && bluePlayer.hasScored) {
+                    gameState = 'scored';
+                    redScore += currentRedScore;
+                    blueScore += currentBlueScore;
+                }
+            }
+
+            draw() {
+                // Draw trail first so it appears behind the player
+                this.trail.draw(ctx);
+
+                const swayAngle = Math.sin(this.time) * SWAY_AMPLITUDE * 0.2;
+                
+                ctx.fillStyle = this.isRed ? 
+                    (this.hasScored ? 'rgba(255, 0, 0, 0.5)' : '#FF0000') : 
+                    (this.hasScored ? 'rgba(0, 0, 255, 0.5)' : '#0000FF');
+                
+                ctx.save();
+                ctx.translate(this.position.x, this.position.y);
+                ctx.rotate(this.angle + swayAngle);
+                ctx.beginPath();
+                ctx.moveTo(15, 0);
+                ctx.lineTo(-7, 7);
+                ctx.lineTo(-7, -7);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+
+            edges() {
+                if (this.position.x > canvas.width) this.position.x = canvas.width;
+                else if (this.position.x < 0) this.position.x = 0;
+                if (this.position.y > canvas.height) this.position.y = canvas.height;
+                else if (this.position.y < 0) this.position.y = 0;
+            }
+        }
+
+        class Boid {
+            constructor() {
+                this.velocity = new Vector(0, 0);
+                this.acceleration = new Vector(0, 0);
+            }
+
+            align(boids) {
+                let steering = new Vector(0, 0);
+                let total = 0;
+
+                for (let boid of boids) {
+                    let d = Math.hypot(
+                        this.position.x - boid.position.x,
+                        this.position.y - boid.position.y
+                    );
+                    if (boid !== this && d < PERCEPTION_RADIUS) {
+                        steering.add(boid.velocity);
+                        total++;
+                    }
+                }
+
+                if (total > 0) {
+                    steering.div(total);
+                    steering.normalize();
+                    steering.mult(MAX_SPEED);
+                    let steeringForce = steering.sub(this.velocity);
+                    steeringForce.limit(MAX_FORCE);
+                    return steeringForce;
+                }
+                return steering;
+            }
+
+            cohesion(boids) {
+                let steering = new Vector(0, 0);
+                let total = 0;
+
+                for (let boid of boids) {
+                    let d = Math.hypot(
+                        this.position.x - boid.position.x,
+                        this.position.y - boid.position.y
+                    );
+                    if (boid !== this && d < PERCEPTION_RADIUS) {
+                        steering.add(boid.position);
+                        total++;
+                    }
+                }
+
+                if (total > 0) {
+                    steering.div(total);
+                    let desired = steering.sub(this.position);
+                    desired.normalize();
+                    desired.mult(MAX_SPEED);
+                    let steeringForce = desired.sub(this.velocity);
+                    steeringForce.limit(MAX_FORCE);
+                    return steeringForce;
+                }
+                return steering;
+            }
+
+            separation(boids) {
+                let steering = new Vector(0, 0);
+                let total = 0;
+
+                for (let boid of boids) {
+                    let d = Math.hypot(
+                        this.position.x - boid.position.x,
+                        this.position.y - boid.position.y
+                    );
+                    if (boid !== this && d < PERCEPTION_RADIUS) {
+                        let diff = this.position.sub(boid.position);
+                        diff.div(d * d);
+                        steering.add(diff);
+                        total++;
+                    }
+                }
+
+                if (total > 0) {
+                    steering.div(total);
+                    steering.normalize();
+                    steering.mult(MAX_SPEED);
+                    let steeringForce = steering.sub(this.velocity);
+                    steeringForce.limit(MAX_FORCE);
+                    return steeringForce;
+                }
+                return steering;
+            }
+
+            attractToPlayer(player) {
+                let steering = new Vector(0, 0);
+                
+                let d = Math.hypot(
+                    this.position.x - player.position.x,
+                    this.position.y - player.position.y
+                );
+
+                if (d < PLAYER_ATTRACTION_RADIUS) {
+                    let strength = (PLAYER_ATTRACTION_RADIUS - d) / PLAYER_ATTRACTION_RADIUS;
+                    
+                    let desired = new Vector(
+                        player.position.x - this.position.x,
+                        player.position.y - this.position.y
+                    );
+                    
+                    desired.normalize();
+                    desired.mult(MAX_SPEED * strength);
+                    
+                    steering = desired.sub(this.velocity);
+                    steering.limit(MAX_FORCE);
+                }
+                
+                return steering;
+            }
+
+            flock(boids, redPlayer, bluePlayer) {
+                let alignment = this.align(boids);
+                let cohesion = this.cohesion(boids);
+                let separation = this.separation(boids);
+                
+                // Only be attracted to players who haven't scored
+                let redAttraction = redPlayer.hasScored ? new Vector(0, 0) : this.attractToPlayer(redPlayer);
+                let blueAttraction = bluePlayer.hasScored ? new Vector(0, 0) : this.attractToPlayer(bluePlayer);
+
+                alignment.mult(ALIGNMENT_WEIGHT);
+                cohesion.mult(COHESION_WEIGHT);
+                separation.mult(SEPARATION_WEIGHT);
+                redAttraction.mult(PLAYER_ATTRACTION_WEIGHT);
+                blueAttraction.mult(PLAYER_ATTRACTION_WEIGHT);
+
+                this.acceleration.add(alignment);
+                this.acceleration.add(cohesion);
+                this.acceleration.add(separation);
+                this.acceleration.add(redAttraction);
+                this.acceleration.add(blueAttraction);
+            }
+
+            update() {
+                this.position.add(this.velocity);
+                this.velocity.add(this.acceleration);
+                this.velocity.limit(MAX_SPEED);
+                this.acceleration.mult(0);
+                this.edges();
+            }
+
+            edges() {
+                if (this.position.x > canvas.width) this.position.x = canvas.width;
+                else if (this.position.x < 0) this.position.x = 0;
+                if (this.position.y > canvas.height) this.position.y = 0;
+                else if (this.position.y < 0) this.position.y = canvas.height;
+            }
+
+            draw() {
+                const angle = Math.atan2(this.velocity.y, this.velocity.x);
+                ctx.fillStyle = '#1E90FF';
+                ctx.save();
+                ctx.translate(this.position.x, this.position.y);
+                ctx.rotate(angle);
+                ctx.beginPath();
+                ctx.moveTo(10, 0);
+                ctx.lineTo(-5, 5);
+                ctx.lineTo(-5, -5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+
+            isInRedZone() {
+                return this.position.x <= SCORING_ZONE_WIDTH;
+            }
+
+            isInBlueZone() {
+                return this.position.x >= BLUE_ZONE_X;
+            }
+        }
+
+        // Create players and boids
+        const redPlayer = new Player(true);
+        const bluePlayer = new Player(false);
+        
+        function initializeBoids() {
+            activeBoids = [];
+            redScoredBoids = [];
+            blueScoredBoids = [];
+
+            // Calculate grid dimensions
+            const playingFieldWidth = MAIN_ZONE_WIDTH;
+            const margin = 50; // Margin from edges
+            const usableWidth = playingFieldWidth - (2 * margin);
+            const usableHeight = canvas.height - (2 * margin);
+
+            // Calculate number of rows and columns for even distribution
+            const gridRatio = usableWidth / usableHeight;
+            const totalCells = BOID_COUNT;
+            const numCols = Math.round(Math.sqrt(totalCells * gridRatio));
+            const numRows = Math.ceil(totalCells / numCols);
+
+            // Calculate cell size
+            const cellWidth = usableWidth / numCols;
+            const cellHeight = usableHeight / numRows;
+
+            // Create boids in a grid pattern with slight random offset
+            let count = 0;
+            for (let row = 0; row < numRows && count < BOID_COUNT; row++) {
+                for (let col = 0; col < numCols && count < BOID_COUNT; col++) {
+                    // Calculate base position
+                    const baseX = margin + (col + 0.5) * cellWidth;
+                    const baseY = margin + (row + 0.5) * cellHeight;
+
+                    // Add small random offset (20% of cell size)
+                    const offsetX = (Math.random() - 0.5) * cellWidth * 0.2;
+                    const offsetY = (Math.random() - 0.5) * cellHeight * 0.2;
+
+                    const boid = new Boid();
+                    boid.position = new Vector(
+                        baseX + offsetX,
+                        baseY + offsetY
+                    );
+
+                    // Give random initial velocity
+                    const angle = Math.random() * Math.PI * 2;
+                    boid.velocity = new Vector(
+                        Math.cos(angle) * MAX_SPEED * 0.5,
+                        Math.sin(angle) * MAX_SPEED * 0.5
+                    );
+
+                    activeBoids.push(boid);
+                    count++;
+                }
+            }
+        }
+
+        initializeBoids();
+
+        function drawUI() {
+            // Draw scoring zones
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.1)';
+            ctx.fillRect(RED_ZONE_X, 0, SCORING_ZONE_WIDTH, canvas.height);
+
+            ctx.fillStyle = 'rgba(0, 0, 255, 0.1)';
+            ctx.fillRect(BLUE_ZONE_X, 0, SCORING_ZONE_WIDTH, canvas.height);
+
+            // Draw center lines
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.beginPath();
+            ctx.moveTo(SCORING_ZONE_WIDTH/2, 0);
+            ctx.lineTo(SCORING_ZONE_WIDTH/2, canvas.height);
+            ctx.moveTo(BLUE_ZONE_X + SCORING_ZONE_WIDTH/2, 0);
+            ctx.lineTo(BLUE_ZONE_X + SCORING_ZONE_WIDTH/2, canvas.height);
+            ctx.stroke();
+
+            // Draw scores
+            ctx.fillStyle = 'white';
+            ctx.font = '24px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Red Score: ${redScore}`, 10, 30);
+            ctx.fillText(`Blue Score: ${blueScore}`, canvas.width - 150, 30);
+            ctx.fillText(`Round: ${roundNumber}`, canvas.width/2 - 50, 30);
+
+            // Draw current round information
+            if (gameState === 'playing') {
+                const redBoidsInZone = activeBoids.filter(boid => boid.isInRedZone()).length;
+                const blueBoidsInZone = activeBoids.filter(boid => boid.isInBlueZone()).length;
+                const neutralBoids = activeBoids.filter(boid => !boid.isInRedZone() && !boid.isInBlueZone()).length;
+                
+                // Show locked scores if player has scored
+                if (redPlayer.hasScored) {
+                    ctx.fillText(`Red Score Locked: ${currentRedScore}`, 10, 60);
+                } else {
+                    ctx.fillText(`Red Zone: ${redBoidsInZone}`, 10, 60);
+                }
+                
+                if (bluePlayer.hasScored) {
+                    ctx.fillText(`Blue Score Locked: ${currentBlueScore}`, canvas.width - 150, 60);
+                } else {
+                    ctx.fillText(`Blue Zone: ${blueBoidsInZone}`, canvas.width - 150, 60);
+                }
+
+                // Show neutral count in the middle
+                ctx.textAlign = 'center';
+                ctx.fillText(`Neutral: ${neutralBoids}`, canvas.width/2, 90);
+
+                // Show waiting message if one player has scored
+                if (redPlayer.hasScored && !bluePlayer.hasScored) {
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Waiting for Blue player...', canvas.width/2, 60);
+                } else if (bluePlayer.hasScored && !redPlayer.hasScored) {
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Waiting for Red player...', canvas.width/2, 60);
+                }
+            }
+
+            // Draw instructions if scored
+            if (gameState === 'scored') {
+                ctx.fillStyle = 'white';
+                ctx.font = '32px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Press SPACE for next round', canvas.width/2, canvas.height/2);
+                
+                // Show round summary
+                ctx.font = '24px Arial';
+                const winner = currentRedScore > currentBlueScore ? 'Red' : 
+                             currentBlueScore > currentRedScore ? 'Blue' : 'Tie';
+                const neutralCount = activeBoids.length;
+                
+                ctx.fillText(`Round ${roundNumber} - ${winner} wins!`, canvas.width/2, canvas.height/2 + 40);
+                ctx.fillText(`Red: ${currentRedScore} vs Blue: ${currentBlueScore}`, canvas.width/2, canvas.height/2 + 80);
+                ctx.fillText(`Uncaptured boids: ${neutralCount}`, canvas.width/2, canvas.height/2 + 120);
+                
+                // Calculate and show percentages
+                const totalBoids = currentRedScore + currentBlueScore + neutralCount;
+                const redPercent = Math.round((currentRedScore / totalBoids) * 100);
+                const bluePercent = Math.round((currentBlueScore / totalBoids) * 100);
+                const neutralPercent = Math.round((neutralCount / totalBoids) * 100);
+                
+                ctx.fillText(`Distribution: Red ${redPercent}% - Blue ${bluePercent}% - Neutral ${neutralPercent}%`, 
+                           canvas.width/2, canvas.height/2 + 160);
+            }
+        }
+
+        // Handle space key for new rounds
+        window.addEventListener('keyup', (e) => {
+            if (e.key === ' ' && gameState === 'scored') {
+                gameState = 'playing';
+                roundNumber++;
+                currentRedScore = 0;
+                currentBlueScore = 0;
+                redPlayer.reset();
+                bluePlayer.reset();
+                initializeBoids();
+            }
+        });
+
+        // Animation loop
+        function animate() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Update and draw players
+            redPlayer.update();
+            redPlayer.draw();
+            redPlayer.checkScoring();
+
+            bluePlayer.update();
+            bluePlayer.draw();
+            bluePlayer.checkScoring();
+
+            // Update and draw only active boids
+            for (let boid of activeBoids) {
+                boid.flock(activeBoids, redPlayer, bluePlayer);
+                boid.update();
+                boid.draw();
+            }
+
+            drawUI();
+
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+</html> 
