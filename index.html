@@ -58,6 +58,9 @@
         const PLAYER_ATTRACTION_RADIUS = 300;
         const TRAIL_LENGTH = 20; // Number of positions to remember
         const TRAIL_FADE_SPEED = 0.1; // How quickly the trail fades
+        const BOMB_EXPLOSION_RADIUS = 300; // Radius of bomb explosion
+        const BOMB_FORCE = 15; // Force applied to boids when bomb explodes
+        const BOMB_DURATION = 1500; // Time until bomb explodes in milliseconds
 
         // Player controls
         const keys = {
@@ -65,10 +68,12 @@
             s: false,
             a: false,
             d: false,
+            e: false,
             i: false,
             j: false,
             k: false,
             l: false,
+            u: false,
             ' ': false
         };
 
@@ -171,10 +176,104 @@
             }
         }
 
+        class Bomb {
+            constructor(x, y, isRed) {
+                this.position = new Vector(x, y);
+                this.isRed = isRed;
+                this.createdAt = Date.now();
+                this.hasExploded = false;
+                this.explosionRadius = 0;
+                this.maxExplosionRadius = BOMB_EXPLOSION_RADIUS;
+                this.explosionStartTime = null;
+                this.explosionDuration = 300; // Animation duration in ms
+            }
+
+            update(boids) {
+                const now = Date.now();
+                
+                // Check if it's time to explode
+                if (!this.hasExploded && now - this.createdAt >= BOMB_DURATION) {
+                    this.explode(boids);
+                    this.hasExploded = true;
+                    this.explosionStartTime = now;
+                }
+
+                // Animate explosion
+                if (this.hasExploded && this.explosionStartTime) {
+                    const explosionProgress = (now - this.explosionStartTime) / this.explosionDuration;
+                    this.explosionRadius = this.maxExplosionRadius * Math.min(1, explosionProgress);
+                }
+            }
+
+            explode(boids) {
+                for (let boid of boids) {
+                    const distance = Math.hypot(
+                        this.position.x - boid.position.x,
+                        this.position.y - boid.position.y
+                    );
+
+                    if (distance < BOMB_EXPLOSION_RADIUS) {
+                        // Calculate force based on distance (stronger closer to explosion)
+                        const force = (1 - distance / BOMB_EXPLOSION_RADIUS) * BOMB_FORCE;
+                        
+                        // Calculate direction away from explosion
+                        const pushVector = new Vector(
+                            boid.position.x - this.position.x,
+                            boid.position.y - this.position.y
+                        );
+                        pushVector.normalize();
+                        pushVector.mult(force);
+                        
+                        // Apply force to boid
+                        boid.velocity.add(pushVector);
+                    }
+                }
+            }
+
+            draw(ctx) {
+                if (!this.hasExploded) {
+                    // Draw bomb
+                    ctx.beginPath();
+                    ctx.fillStyle = this.isRed ? '#FF4444' : '#4444FF';
+                    ctx.arc(this.position.x, this.position.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw countdown indicator
+                    const timeLeft = 1 - ((Date.now() - this.createdAt) / BOMB_DURATION);
+                    ctx.beginPath();
+                    ctx.strokeStyle = this.isRed ? '#FF0000' : '#0000FF';
+                    ctx.lineWidth = 2;
+                    ctx.arc(this.position.x, this.position.y, 12, 0, Math.PI * 2 * timeLeft);
+                    ctx.stroke();
+                } else if (this.explosionRadius > 0) {
+                    // Draw explosion
+                    const gradient = ctx.createRadialGradient(
+                        this.position.x, this.position.y, 0,
+                        this.position.x, this.position.y, this.explosionRadius
+                    );
+                    gradient.addColorStop(0, this.isRed ? 'rgba(255, 0, 0, 0.5)' : 'rgba(0, 0, 255, 0.5)');
+                    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    
+                    ctx.beginPath();
+                    ctx.fillStyle = gradient;
+                    ctx.arc(this.position.x, this.position.y, this.explosionRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            isFinished() {
+                return this.hasExploded && 
+                       (Date.now() - this.explosionStartTime) >= this.explosionDuration;
+            }
+        }
+
         class Player {
             constructor(isRed) {
                 this.isRed = isRed;
                 this.trail = new Trail(isRed ? 'rgba(255, 0, 0' : 'rgba(0, 0, 255');
+                this.bombs = [];
+                this.lastBombTime = 0;
+                this.bombCooldown = 1000; // 1 second cooldown between bombs
                 this.reset();
             }
 
@@ -201,12 +300,20 @@
                         if (keys.w) this.speed = PLAYER_SPEED;
                         else if (keys.s) this.speed = -PLAYER_SPEED;
                         else this.speed *= 0.95;
+                        // Place bomb for red player
+                        if (keys.e && Date.now() - this.lastBombTime >= this.bombCooldown) {
+                            this.placeBomb();
+                        }
                     } else {
                         if (keys.j) this.angle -= ROTATION_SPEED;
                         if (keys.l) this.angle += ROTATION_SPEED;
                         if (keys.i) this.speed = PLAYER_SPEED;
                         else if (keys.k) this.speed = -PLAYER_SPEED;
                         else this.speed *= 0.95;
+                        // Place bomb for blue player
+                        if (keys.u && Date.now() - this.lastBombTime >= this.bombCooldown) {
+                            this.placeBomb();
+                        }
                     }
 
                     // Only update time when moving
@@ -234,10 +341,27 @@
 
                     // Add current position to trail
                     this.trail.addPosition(this.position.x, this.position.y);
+
+                    // Update bombs
+                    this.updateBombs();
                 }
                 
                 // Update trail fade effect
                 this.trail.update();
+            }
+
+            placeBomb() {
+                this.bombs.push(new Bomb(this.position.x, this.position.y, this.isRed));
+                this.lastBombTime = Date.now();
+            }
+
+            updateBombs() {
+                // Update all bombs
+                for (let bomb of this.bombs) {
+                    bomb.update(activeBoids);
+                }
+                // Remove finished bombs
+                this.bombs = this.bombs.filter(bomb => !bomb.isFinished());
             }
 
             checkScoring() {
@@ -274,7 +398,12 @@
             }
 
             draw() {
-                // Draw trail first so it appears behind the player
+                // Draw bombs first
+                for (let bomb of this.bombs) {
+                    bomb.draw(ctx);
+                }
+
+                // Draw trail
                 this.trail.draw(ctx);
 
                 const swayAngle = Math.sin(this.time) * SWAY_AMPLITUDE * 0.2;
