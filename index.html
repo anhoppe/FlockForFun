@@ -47,17 +47,18 @@
         const MAX_SPEED = 4;
         const MAX_FORCE = 0.3;
         const PERCEPTION_RADIUS = 50;
-        const ALIGNMENT_WEIGHT = 1.0;
-        const COHESION_WEIGHT = 1.0;
-        const SEPARATION_WEIGHT = 1.5;
+        const ALIGNMENT_WEIGHT = 1.2;  // Increased to make boids maintain direction better
+        const COHESION_WEIGHT = 0.8;   // Reduced to prevent tight clumping
+        const SEPARATION_WEIGHT = 2.0;  // Increased to prevent boids from getting too close
         const PLAYER_SPEED = 5;
         const ROTATION_SPEED = 0.1;
         const SWAY_AMPLITUDE = 0.3;
         const SWAY_FREQUENCY = 0.1;
-        const PLAYER_ATTRACTION_WEIGHT = 0.8;
-        const PLAYER_ATTRACTION_RADIUS = 300;
-        const TRAIL_LENGTH = 20; // Number of positions to remember
-        const TRAIL_FADE_SPEED = 0.1; // How quickly the trail fades
+        const PLAYER_ATTRACTION_WEIGHT = 0.5;  // Reduced from 0.8 for softer attraction
+        const PLAYER_ATTRACTION_RADIUS = 400;  // Increased from 300 for wider influence
+        const PLAYER_MIN_SEPARATION = 30;      // New constant for minimum distance to player
+        const TRAIL_LENGTH = 20;
+        const TRAIL_FADE_SPEED = 0.1;
         const SPARKLE_COUNT = 20; // Number of sparkles per trail
         const SPARKLE_SIZE = 3; // Base size of sparkles
         const SPARKLE_PUSH_RADIUS = 50; // Radius of push effect
@@ -805,43 +806,64 @@
                 // Get the relevant influence based on player color
                 const influence = player.isRed ? this.redInfluence : this.blueInfluence;
                 
-                // If boid is strongly influenced (>0.7), always be attracted regardless of distance
+                // If boid is strongly influenced (>0.7), be attracted from further away
                 // Otherwise, only be attracted within the attraction radius
                 const isStronglyInfluenced = influence > 0.7;
-                const isInRange = Math.hypot(
+                const attractionRadius = isStronglyInfluenced ? 
+                    PLAYER_ATTRACTION_RADIUS * 1.5 : 
+                    PLAYER_ATTRACTION_RADIUS;
+                
+                const d = Math.hypot(
                     this.position.x - player.position.x,
                     this.position.y - player.position.y
-                ) < PLAYER_ATTRACTION_RADIUS;
+                );
+                
+                const isInRange = d < attractionRadius;
                 
                 if (isStronglyInfluenced || isInRange) {
                     // Calculate base attraction strength
-                    let strength = isStronglyInfluenced ? 1.0 : influence;
+                    let strength = isStronglyInfluenced ? 0.8 : influence;  // Reduced from 1.0 to 0.8
                     
                     // If in range but not strongly influenced, scale by distance
                     if (!isStronglyInfluenced && isInRange) {
-                        const d = Math.hypot(
+                        // Use a quadratic falloff for smoother distance-based attraction
+                        const distanceFactor = 1 - (d / attractionRadius);
+                        strength *= distanceFactor * distanceFactor;
+                    }
+                    
+                    // Add separation behavior when too close to player
+                    if (d < PLAYER_MIN_SEPARATION) {
+                        const separationForce = 1 - (d / PLAYER_MIN_SEPARATION);
+                        const pushAway = new Vector(
                             this.position.x - player.position.x,
                             this.position.y - player.position.y
                         );
-                        strength *= (1 - d / PLAYER_ATTRACTION_RADIUS);
-                    }
-                    
-                    // Only attract if there's any influence
-                    if (strength > 0) {
+                        pushAway.normalize();
+                        pushAway.mult(separationForce * MAX_FORCE * 2);
+                        steering.add(pushAway);
+                    } else if (strength > 0) {
+                        // Normal attraction behavior
                         let desired = new Vector(
                             player.position.x - this.position.x,
                             player.position.y - this.position.y
                         );
                         
                         desired.normalize();
-                        // Increase base speed for strongly influenced boids
-                        const speedMultiplier = isStronglyInfluenced ? 1.5 : 1.0;
+                        // Smoother speed scaling based on distance
+                        const speedMultiplier = isStronglyInfluenced ? 
+                            1.2 - (0.2 * (d / attractionRadius)) : // Gradually reduce speed for strongly influenced
+                            1.0 - (0.3 * (d / attractionRadius));  // More speed reduction for normal influence
+                        
                         desired.mult(MAX_SPEED * strength * speedMultiplier);
                         
-                        steering = desired.sub(this.velocity);
-                        // Increase force for strongly influenced boids
-                        const forceMultiplier = isStronglyInfluenced ? 2.0 : 1.0;
-                        steering.limit(MAX_FORCE * strength * PLAYER_ATTRACTION_WEIGHT * forceMultiplier);
+                        let steeringForce = desired.sub(this.velocity);
+                        // Reduce force when closer to target
+                        const forceMultiplier = isStronglyInfluenced ?
+                            1.5 - (0.5 * (d / attractionRadius)) : // Gradually reduce force for strongly influenced
+                            1.0 - (0.3 * (d / attractionRadius));  // Less force reduction for normal influence
+                        
+                        steeringForce.limit(MAX_FORCE * strength * PLAYER_ATTRACTION_WEIGHT * forceMultiplier);
+                        steering.add(steeringForce);
                     }
                 }
                 
