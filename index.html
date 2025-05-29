@@ -65,12 +65,18 @@
         const SPARKLE_PUSH_FORCE = 15; // Increased base force
         const SPARKLE_END_MULTIPLIER = 8.0; // Higher multiplier for exponential growth
         const SPARKLE_EXPONENT = 4; // Controls how steep the exponential curve is
-        const BOMB_EXPLOSION_RADIUS = 300; // Radius of bomb explosion
-        const BOMB_FORCE = 15; // Force applied to boids when bomb explodes
-        const BOMB_DURATION = 1500; // Time until bomb explodes in milliseconds
+        const BOMB_EXPLOSION_RADIUS = 480; // Increased by 20% from 400
+        const BOMB_COLOR_EFFECT_RADIUS = BOMB_EXPLOSION_RADIUS * 1.2; // Color effect reaches further than force
+        const BOMB_BASE_FORCE = MAIN_ZONE_WIDTH / 2.5;
+        const BOMB_FORCE_DECAY = 0.98;
+        const BOMB_MIN_FORCE = 5;
+        const BOMB_DURATION = 1500;
         const INFLUENCE_SPHERE_RADIUS = 120; // Radius of the influence sphere
         const INFLUENCE_RATE = 0.05; // How quickly boids change color
         const SHIMMER_SPEED = 0.1; // Speed of the shimmering effect
+        const BOID_TRAIL_LENGTH = 8;  // Length of boid trails
+        const BOID_TRAIL_WIDTH = 2;   // Width of boid trails
+        const BOID_TRAIL_FADE = 0.15; // How quickly the trail fades
 
         // Player controls
         const keys = {
@@ -438,25 +444,100 @@
 
             explode(boids) {
                 for (let boid of boids) {
+                    // Check if this is an enemy boid (has opposite color influence)
+                    const isEnemyBoid = this.isRed ? 
+                        (boid.blueInfluence >= 0.3) : 
+                        (boid.redInfluence >= 0.3);
+
+                    if (!isEnemyBoid) continue; // Skip if not enemy boid
+
                     const distance = Math.hypot(
                         this.position.x - boid.position.x,
                         this.position.y - boid.position.y
                     );
 
-                    if (distance < BOMB_EXPLOSION_RADIUS) {
-                        // Calculate force based on distance (stronger closer to explosion)
-                        const force = (1 - distance / BOMB_EXPLOSION_RADIUS) * BOMB_FORCE;
+                    // Check for color effect first (larger radius)
+                    if (distance < BOMB_COLOR_EFFECT_RADIUS) {
+                        // Calculate color removal strength - stronger effect closer to center
+                        const colorEffectStrength = Math.pow(1 - distance / BOMB_COLOR_EFFECT_RADIUS, 1.5);
                         
-                        // Calculate direction away from explosion
+                        // Completely remove enemy color influence with rapid falloff at edges
+                        if (this.isRed) {
+                            // Red bomb removes blue influence
+                            if (distance < BOMB_EXPLOSION_RADIUS * 0.7) {
+                                // Complete removal in core blast zone
+                                boid.blueInfluence = 0;
+                            } else {
+                                // Rapid falloff at edges
+                                boid.blueInfluence = Math.max(0, boid.blueInfluence - colorEffectStrength);
+                            }
+                        } else {
+                            // Blue bomb removes red influence
+                            if (distance < BOMB_EXPLOSION_RADIUS * 0.7) {
+                                // Complete removal in core blast zone
+                                boid.redInfluence = 0;
+                            } else {
+                                // Rapid falloff at edges
+                                boid.redInfluence = Math.max(0, boid.redInfluence - colorEffectStrength);
+                            }
+                        }
+                    }
+
+                    // Apply force effect (smaller radius than color effect)
+                    if (distance < BOMB_EXPLOSION_RADIUS) {
+                        // Calculate force effect strength
+                        const forceEffectStrength = Math.pow(1 - distance / BOMB_EXPLOSION_RADIUS, 2);
+                        
+                        // Calculate direction vector from explosion to boid
                         const pushVector = new Vector(
                             boid.position.x - this.position.x,
                             boid.position.y - this.position.y
                         );
                         pushVector.normalize();
-                        pushVector.mult(force);
+
+                        // Calculate force with exponential decay from center
+                        const forceMultiplier = Math.max(
+                            BOMB_MIN_FORCE,
+                            BOMB_BASE_FORCE * Math.pow(BOMB_FORCE_DECAY, distance / 50)
+                        );
+
+                        // Apply the force
+                        pushVector.mult(forceMultiplier * forceEffectStrength);
+                        
+                        // Store original velocity for verification
+                        const originalVelX = boid.velocity.x;
+                        const originalVelY = boid.velocity.y;
                         
                         // Apply force to boid
                         boid.velocity.add(pushVector);
+
+                        // Ensure significant minimum velocity change
+                        const velocityChange = Math.hypot(
+                            boid.velocity.x - originalVelX,
+                            boid.velocity.y - originalVelY
+                        );
+
+                        // If velocity change is too small, apply minimum force
+                        if (velocityChange < BOMB_MIN_FORCE) {
+                            pushVector.normalize();
+                            pushVector.mult(BOMB_MIN_FORCE);
+                            boid.velocity.add(pushVector);
+                        }
+
+                        // Allow higher temporary speed for explosion effect
+                        const maxExplosionSpeed = MAX_SPEED * 4;
+                        const currentSpeed = Math.hypot(boid.velocity.x, boid.velocity.y);
+                        if (currentSpeed > maxExplosionSpeed) {
+                            boid.velocity.normalize();
+                            boid.velocity.mult(maxExplosionSpeed);
+                        }
+
+                        // Ensure minimum speed after explosion
+                        const minExplosionSpeed = MAX_SPEED * 2;
+                        if (currentSpeed < minExplosionSpeed && distance < BOMB_EXPLOSION_RADIUS * 0.5) {
+                            boid.velocity.normalize();
+                            boid.velocity.mult(minExplosionSpeed);
+                        }
                     }
                 }
             }
@@ -466,28 +547,39 @@
                     // Draw bomb
                     ctx.beginPath();
                     ctx.fillStyle = this.isRed ? '#FF4444' : '#4444FF';
-                    ctx.arc(this.position.x, this.position.y, 8, 0, Math.PI * 2);
+                    ctx.arc(this.position.x, this.position.y, 10, 0, Math.PI * 2);
                     ctx.fill();
 
                     // Draw countdown indicator
                     const timeLeft = 1 - ((Date.now() - this.createdAt) / BOMB_DURATION);
                     ctx.beginPath();
                     ctx.strokeStyle = this.isRed ? '#FF0000' : '#0000FF';
-                    ctx.lineWidth = 2;
-                    ctx.arc(this.position.x, this.position.y, 12, 0, Math.PI * 2 * timeLeft);
+                    ctx.lineWidth = 3;
+                    ctx.arc(this.position.x, this.position.y, 15, 0, Math.PI * 2 * timeLeft);
                     ctx.stroke();
                 } else if (this.explosionRadius > 0) {
-                    // Draw explosion
-                    const gradient = ctx.createRadialGradient(
+                    // Draw both color effect and force effect radiuses
+                    const colorGradient = ctx.createRadialGradient(
                         this.position.x, this.position.y, 0,
-                        this.position.x, this.position.y, this.explosionRadius
+                        this.position.x, this.position.y, this.explosionRadius * 1.2
                     );
-                    gradient.addColorStop(0, this.isRed ? 'rgba(255, 0, 0, 0.5)' : 'rgba(0, 0, 255, 0.5)');
-                    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    
+                    if (this.isRed) {
+                        colorGradient.addColorStop(0, 'rgba(255, 50, 50, 0.8)');
+                        colorGradient.addColorStop(0.4, 'rgba(255, 0, 0, 0.6)');
+                        colorGradient.addColorStop(0.7, 'rgba(255, 0, 0, 0.3)');
+                        colorGradient.addColorStop(0.85, 'rgba(255, 0, 0, 0.1)');
+                    } else {
+                        colorGradient.addColorStop(0, 'rgba(50, 50, 255, 0.8)');
+                        colorGradient.addColorStop(0.4, 'rgba(0, 0, 255, 0.6)');
+                        colorGradient.addColorStop(0.7, 'rgba(0, 0, 255, 0.3)');
+                        colorGradient.addColorStop(0.85, 'rgba(0, 0, 255, 0.1)');
+                    }
+                    colorGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
                     
                     ctx.beginPath();
-                    ctx.fillStyle = gradient;
-                    ctx.arc(this.position.x, this.position.y, this.explosionRadius, 0, Math.PI * 2);
+                    ctx.fillStyle = colorGradient;
+                    ctx.arc(this.position.x, this.position.y, this.explosionRadius * 1.2, 0, Math.PI * 2);
                     ctx.fill();
                 }
             }
@@ -711,12 +803,69 @@
             }
         }
 
+        class BoidTrail {
+            constructor() {
+                this.positions = [];
+                this.opacities = [];
+            }
+
+            addPosition(x, y) {
+                this.positions.push({ x, y });
+                this.opacities.push(1.0);
+
+                if (this.positions.length > BOID_TRAIL_LENGTH) {
+                    this.positions.shift();
+                    this.opacities.shift();
+                }
+            }
+
+            update() {
+                // Fade out trail
+                for (let i = 0; i < this.opacities.length; i++) {
+                    this.opacities[i] -= BOID_TRAIL_FADE;
+                }
+            }
+
+            draw(ctx, redInfluence, blueInfluence) {
+                if (this.positions.length < 2) return;
+
+                // Only draw trail if boid is significantly influenced
+                const totalInfluence = redInfluence + blueInfluence;
+                if (totalInfluence < 0.3) return;
+
+                ctx.lineWidth = BOID_TRAIL_WIDTH;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                // Draw trail segments
+                for (let i = 1; i < this.positions.length; i++) {
+                    const pos = this.positions[i];
+                    const prevPos = this.positions[i-1];
+                    const opacity = this.opacities[i];
+                    
+                    if (opacity <= 0) continue;
+
+                    // Calculate color based on influences
+                    const r = Math.floor(255 * redInfluence);
+                    const b = Math.floor(255 * blueInfluence);
+                    const g = 0; // No green component
+
+                    ctx.beginPath();
+                    ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+                    ctx.moveTo(prevPos.x, prevPos.y);
+                    ctx.lineTo(pos.x, pos.y);
+                    ctx.stroke();
+                }
+            }
+        }
+
         class Boid {
             constructor() {
                 this.velocity = new Vector(0, 0);
                 this.acceleration = new Vector(0, 0);
-                this.redInfluence = 0;  // 0 to 1 value for red team influence
-                this.blueInfluence = 0; // 0 to 1 value for blue team influence
+                this.redInfluence = 0;
+                this.blueInfluence = 0;
+                this.trail = new BoidTrail();  // Add trail to boid
             }
 
             align(boids) {
@@ -898,6 +1047,10 @@
                 this.velocity.limit(MAX_SPEED);
                 this.acceleration.mult(0);
                 this.edges();
+
+                // Update trail
+                this.trail.addPosition(this.position.x, this.position.y);
+                this.trail.update();
 
                 // Gradually decay color influences
                 this.redInfluence = Math.max(0, this.redInfluence - 0.001);
