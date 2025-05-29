@@ -77,6 +77,9 @@
         const BOID_TRAIL_LENGTH = 8;  // Length of boid trails
         const BOID_TRAIL_WIDTH = 2;   // Width of boid trails
         const BOID_TRAIL_FADE = 0.15; // How quickly the trail fades
+        const SCORING_TIMER_DURATION = 7000; // 7 seconds in milliseconds
+        let scoringTimerStart = null;
+        let isTimerRunning = false;
 
         // Player controls
         const keys = {
@@ -598,7 +601,8 @@
                 this.lastBombTime = 0;
                 this.bombCooldown = 1000;
                 this.sphereTime = 0;
-                this.hasCollected = false;  // New flag to track if boids have been collected
+                this.hasCollected = false;
+                this.scoreTime = null;  // When this player scored
                 this.reset();
             }
 
@@ -613,6 +617,7 @@
                 this.time = 0;
                 this.hasScored = false;
                 this.hasCollected = false;
+                this.scoreTime = null;
                 this.trail = new Trail(this.isRed);
             }
 
@@ -714,6 +719,13 @@
                             );
                             this.hasCollected = true;
                             this.hasScored = true;
+                            this.scoreTime = Date.now();
+                            
+                            // Start timer if this is the first player to score
+                            if (!isTimerRunning) {
+                                scoringTimerStart = Date.now();
+                                isTimerRunning = true;
+                            }
                         }
                     } else if (!this.isRed && this.position.x >= blueCenterLine) {
                         // Collect blue-influenced boids
@@ -728,18 +740,41 @@
                             );
                             this.hasCollected = true;
                             this.hasScored = true;
+                            this.scoreTime = Date.now();
+                            
+                            // Start timer if this is the first player to score
+                            if (!isTimerRunning) {
+                                scoringTimerStart = Date.now();
+                                isTimerRunning = true;
+                            }
                         }
                     }
                 }
 
-                // Check if both players have scored to end the round
-                if (this.hasScored && (
-                    (this.isRed && bluePlayer.hasScored) || 
-                    (!this.isRed && redPlayer.hasScored)
-                )) {
-                    gameState = 'scored';
-                    redScore += currentRedScore;
-                    blueScore += currentBlueScore;
+                // Check if both players have scored or if time has run out
+                if (isTimerRunning) {
+                    const timeElapsed = Date.now() - scoringTimerStart;
+                    if (timeElapsed >= SCORING_TIMER_DURATION && gameState === 'playing') {
+                        // Time's up! The player who hasn't scored loses
+                        gameState = 'scored';
+                        if (!redPlayer.hasScored) {
+                            // Red player didn't score in time
+                            currentRedScore = 0;
+                        }
+                        if (!bluePlayer.hasScored) {
+                            // Blue player didn't score in time
+                            currentBlueScore = 0;
+                        }
+                        redScore += currentRedScore;
+                        blueScore += currentBlueScore;
+                    } else if (this.hasScored && (
+                        (this.isRed && bluePlayer.hasScored) || 
+                        (!this.isRed && redPlayer.hasScored)
+                    )) {
+                        gameState = 'scored';
+                        redScore += currentRedScore;
+                        blueScore += currentBlueScore;
+                    }
                 }
             }
 
@@ -1255,13 +1290,29 @@
                 ctx.textAlign = 'center';
                 ctx.fillText(`Neutral: ${neutralBoids}`, canvas.width/2, 90);
 
-                // Show waiting message if one player has scored
-                if (redPlayer.hasScored && !bluePlayer.hasScored) {
+                // Draw timer if active
+                if (isTimerRunning) {
+                    const timeLeft = Math.max(0, SCORING_TIMER_DURATION - (Date.now() - scoringTimerStart));
+                    const secondsLeft = Math.ceil(timeLeft / 1000);
+                    
+                    ctx.font = '36px Arial';
                     ctx.textAlign = 'center';
-                    ctx.fillText('Waiting for Blue player...', canvas.width/2, 60);
-                } else if (bluePlayer.hasScored && !redPlayer.hasScored) {
-                    ctx.textAlign = 'center';
-                    ctx.fillText('Waiting for Red player...', canvas.width/2, 60);
+                    
+                    // Make timer red when less than 3 seconds remain
+                    if (secondsLeft <= 3) {
+                        ctx.fillStyle = '#FF0000';
+                    }
+                    
+                    ctx.fillText(`${secondsLeft}`, canvas.width/2, 60);
+                    
+                    // Draw which player needs to score
+                    ctx.font = '24px Arial';
+                    ctx.fillStyle = 'white';
+                    if (!redPlayer.hasScored) {
+                        ctx.fillText('Red player must score!', canvas.width/2, 120);
+                    } else if (!bluePlayer.hasScored) {
+                        ctx.fillText('Blue player must score!', canvas.width/2, 120);
+                    }
                 }
             }
 
@@ -1278,6 +1329,16 @@
                              currentBlueScore > currentRedScore ? 'Blue' : 'Tie';
                 const neutralCount = activeBoids.length;
                 
+                // Show if someone ran out of time
+                if (isTimerRunning && (Date.now() - scoringTimerStart >= SCORING_TIMER_DURATION)) {
+                    if (!redPlayer.hasScored) {
+                        ctx.fillText('Red player ran out of time!', canvas.width/2, canvas.height/2 - 40);
+                    }
+                    if (!bluePlayer.hasScored) {
+                        ctx.fillText('Blue player ran out of time!', canvas.width/2, canvas.height/2 - 40);
+                    }
+                }
+                
                 ctx.fillText(`Round ${roundNumber} - ${winner} wins!`, canvas.width/2, canvas.height/2 + 40);
                 ctx.fillText(`Red: ${currentRedScore} vs Blue: ${currentBlueScore}`, canvas.width/2, canvas.height/2 + 80);
                 ctx.fillText(`Uncaptured boids: ${neutralCount}`, canvas.width/2, canvas.height/2 + 120);
@@ -1293,7 +1354,7 @@
             }
         }
 
-        // Handle space key for new rounds
+        // Reset timer when starting new round
         window.addEventListener('keyup', (e) => {
             if (e.key === ' ' && gameState === 'scored') {
                 gameState = 'playing';
@@ -1303,6 +1364,8 @@
                 redPlayer.reset();
                 bluePlayer.reset();
                 initializeBoids();
+                scoringTimerStart = null;
+                isTimerRunning = false;
             }
         });
 
